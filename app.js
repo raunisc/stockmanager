@@ -604,6 +604,20 @@ class StockMasterApp {
         const lowStockProducts = this.products.filter(p => Utils.getStockStatus(p.quantity, p.minStock || 10) === 'low');
         const outOfStockProducts = this.products.filter(p => p.quantity === 0);
 
+        // Group products by category
+        const categoryGroups = Utils.groupBy(this.products, 'category');
+        const categoryStats = Object.keys(categoryGroups).map(category => {
+            const categoryProducts = categoryGroups[category];
+            const categoryValue = categoryProducts.reduce((sum, product) => sum + (product.quantity * product.price), 0);
+            const categoryQuantity = categoryProducts.reduce((sum, product) => sum + product.quantity, 0);
+            return {
+                name: category,
+                products: categoryProducts.length,
+                quantity: categoryQuantity,
+                value: categoryValue
+            };
+        });
+
         container.innerHTML = `
             <div class="report-stats">
                 <div class="report-stat">
@@ -623,11 +637,39 @@ class StockMasterApp {
                     <p>Esgotados</p>
                 </div>
             </div>
+            
+            ${categoryStats.length > 0 ? `
+                <div class="report-details">
+                    <h4>Estoque por Categoria:</h4>
+                    <div class="category-stats">
+                        ${categoryStats.map(cat => `
+                            <div class="category-stat-item" style="padding: 1rem; background: var(--background-color); border-radius: var(--border-radius); margin-bottom: 1rem; border-left: 4px solid var(--primary-color);">
+                                <h5 style="margin-bottom: 0.5rem; color: var(--primary-color);">${cat.name}</h5>
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 1rem; margin-top: 0.5rem;">
+                                    <div style="text-align: center;">
+                                        <strong style="font-size: 1.2rem; display: block;">${cat.products}</strong>
+                                        <small style="color: var(--text-secondary);">Produtos</small>
+                                    </div>
+                                    <div style="text-align: center;">
+                                        <strong style="font-size: 1.2rem; display: block;">${formatNumber(cat.quantity)}</strong>
+                                        <small style="color: var(--text-secondary);">Unidades</small>
+                                    </div>
+                                    <div style="text-align: center;">
+                                        <strong style="font-size: 1.2rem; display: block;">${formatCurrency(cat.value)}</strong>
+                                        <small style="color: var(--text-secondary);">Valor Total</small>
+                                    </div>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            ` : ''}
+            
             ${lowStockProducts.length > 0 ? `
                 <div class="report-details">
                     <h4>Produtos com Estoque Baixo:</h4>
                     <ul>
-                        ${lowStockProducts.slice(0, 10).map(p => `<li>${p.name} - ${p.quantity} unidades</li>`).join('')}
+                        ${lowStockProducts.slice(0, 10).map(p => `<li>${p.name} (${p.category}) - ${p.quantity} unidades</li>`).join('')}
                         ${lowStockProducts.length > 10 ? `<li>... e mais ${lowStockProducts.length - 10} produtos</li>` : ''}
                     </ul>
                 </div>
@@ -722,7 +764,7 @@ class StockMasterApp {
                 <div class="empty-state">
                     <i class="fas fa-exclamation-triangle"></i>
                     <h3>Erro ao carregar insights</h3>
-                    <p>Tente recarregar a página ou adicione mais dados ao sistema</p>
+                    <p>Tente recarregar a página ou adicionar mais dados ao sistema</p>
                 </div>
             `;
         }
@@ -741,13 +783,16 @@ class StockMasterApp {
     }
 
     // Product Management
-    showProductModal(productId = null) {
+    async showProductModal(productId = null) {
         const modal = document.getElementById('product-modal');
         const form = document.getElementById('product-form');
         const title = document.getElementById('modal-title');
         const submitText = document.getElementById('submit-text');
 
         if (!modal || !form || !title || !submitText) return;
+
+        // Always populate categories when showing modal
+        await this.populateProductCategorySelect();
 
         if (productId) {
             const product = this.products.find(p => p.id === productId);

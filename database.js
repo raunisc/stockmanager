@@ -61,12 +61,8 @@ class StockDatabase {
     async createTables() {
         // Initialize default categories
         const defaultCategories = [
-            { name: 'Eletrônicos', description: 'Produtos eletrônicos e tecnologia' },
-            { name: 'Roupas', description: 'Vestuário e acessórios' },
-            { name: 'Casa e Jardim', description: 'Produtos para casa e jardinagem' },
-            { name: 'Esportes', description: 'Equipamentos esportivos' },
-            { name: 'Livros', description: 'Livros e materiais educativos' },
-            { name: 'Alimentos', description: 'Produtos alimentícios' }
+            { name: 'Burger e Otakus', description: 'Produtos relacionados a hambúrgueres e cultura otaku' },
+            { name: 'Dogão do Canela Fina', description: 'Hot dogs e produtos especiais do Canela Fina' }
         ];
 
         for (const category of defaultCategories) {
@@ -434,4 +430,3 @@ class StockDatabase {
 
 // Initialize database
 const db = new StockDatabase();
-
