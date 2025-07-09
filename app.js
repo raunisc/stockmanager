@@ -519,20 +519,48 @@ class StockMasterApp {
 
     async populateProductCategorySelect() {
         const select = document.getElementById('product-category');
-        if (!select) return;
+        if (!select) {
+            console.error('Product category select not found');
+            return;
+        }
 
         try {
             const categories = await db.getCategories();
             select.innerHTML = '<option value="">Selecionar categoria</option>';
             
-            categories.forEach(category => {
-                const option = document.createElement('option');
-                option.value = category.name;
-                option.textContent = category.name;
-                select.appendChild(option);
-            });
+            if (categories && categories.length > 0) {
+                categories.forEach(category => {
+                    const option = document.createElement('option');
+                    option.value = category.name;
+                    option.textContent = category.name;
+                    select.appendChild(option);
+                });
+            } else {
+                // If no categories exist, create default ones
+                const defaultCategories = [
+                    { name: 'Burger e Otakus', description: 'Produtos relacionados a hambúrgueres e cultura otaku' },
+                    { name: 'Dogão do Canela Fina', description: 'Hot dogs e produtos especiais do Canela Fina' }
+                ];
+
+                for (const category of defaultCategories) {
+                    await db.addCategory(category);
+                }
+
+                // Reload categories after adding defaults
+                const newCategories = await db.getCategories();
+                if (newCategories && newCategories.length > 0) {
+                    newCategories.forEach(category => {
+                        const option = document.createElement('option');
+                        option.value = category.name;
+                        option.textContent = category.name;
+                        select.appendChild(option);
+                    });
+                }
+            }
         } catch (error) {
             console.error('Error populating product category select:', error);
+            // Add a fallback option
+            select.innerHTML = '<option value="">Erro ao carregar categorias</option>';
         }
     }
 
@@ -691,6 +719,25 @@ class StockMasterApp {
         const entriesCount = recentMovements.filter(m => m.type === 'entrada').length;
         const exitsCount = recentMovements.filter(m => m.type === 'saida').length;
 
+        // Calculate quantities and values for entries and exits
+        const entriesData = recentMovements.filter(m => m.type === 'entrada').reduce((acc, movement) => {
+            const product = this.products.find(p => p.id === movement.productId);
+            if (product) {
+                acc.quantity += movement.quantity;
+                acc.value += movement.quantity * product.price;
+            }
+            return acc;
+        }, { quantity: 0, value: 0 });
+
+        const exitsData = recentMovements.filter(m => m.type === 'saida').reduce((acc, movement) => {
+            const product = this.products.find(p => p.id === movement.productId);
+            if (product) {
+                acc.quantity += movement.quantity;
+                acc.value += movement.quantity * product.price;
+            }
+            return acc;
+        }, { quantity: 0, value: 0 });
+
         container.innerHTML = `
             <div class="report-stats">
                 <div class="report-stat">
@@ -706,18 +753,85 @@ class StockMasterApp {
                     <p>Saídas</p>
                 </div>
             </div>
-            ${recentMovements.length > 0 ? `
-                <div class="report-details">
-                    <h4>Movimentações Recentes:</h4>
-                    <ul>
-                        ${recentMovements.slice(0, 10).map(m => {
-                            const product = this.products.find(p => p.id === m.productId);
-                            return `<li>${product ? product.name : 'N/A'} - ${m.type} - ${formatDate(m.date)}</li>`;
-                        }).join('')}
-                        ${recentMovements.length > 10 ? `<li>... e mais ${recentMovements.length - 10} movimentações</li>` : ''}
-                    </ul>
+            
+            <div class="report-details">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; margin-bottom: 1.5rem;">
+                    <div class="movement-summary-card" style="background: rgba(16, 185, 129, 0.1); border-left: 4px solid var(--success-color); padding: 1.5rem; border-radius: var(--border-radius);">
+                        <h4 style="color: var(--success-color); margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;">
+                            <i class="fas fa-arrow-up"></i>
+                            Entradas (30 dias)
+                        </h4>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                            <div style="text-align: center;">
+                                <strong style="font-size: 1.5rem; display: block; color: var(--success-color);">${formatNumber(entriesData.quantity)}</strong>
+                                <small style="color: var(--text-secondary);">Unidades</small>
+                            </div>
+                            <div style="text-align: center;">
+                                <strong style="font-size: 1.5rem; display: block; color: var(--success-color);">${formatCurrency(entriesData.value)}</strong>
+                                <small style="color: var(--text-secondary);">Valor Total</small>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="movement-summary-card" style="background: rgba(245, 158, 11, 0.1); border-left: 4px solid var(--warning-color); padding: 1.5rem; border-radius: var(--border-radius);">
+                        <h4 style="color: var(--warning-color); margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;">
+                            <i class="fas fa-arrow-down"></i>
+                            Saídas (30 dias)
+                        </h4>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                            <div style="text-align: center;">
+                                <strong style="font-size: 1.5rem; display: block; color: var(--warning-color);">${formatNumber(exitsData.quantity)}</strong>
+                                <small style="color: var(--text-secondary);">Unidades</small>
+                            </div>
+                            <div style="text-align: center;">
+                                <strong style="font-size: 1.5rem; display: block; color: var(--warning-color);">${formatCurrency(exitsData.value)}</strong>
+                                <small style="color: var(--text-secondary);">Valor Total</small>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-            ` : ''}
+                
+                ${entriesData.quantity > 0 || exitsData.quantity > 0 ? `
+                    <div class="balance-summary" style="background: var(--background-color); padding: 1.5rem; border-radius: var(--border-radius); margin-bottom: 1.5rem;">
+                        <h4 style="margin-bottom: 1rem; color: var(--text-primary);">Balanço do Período</h4>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem;">
+                            <div style="text-align: center;">
+                                <strong style="font-size: 1.3rem; display: block; color: ${entriesData.quantity - exitsData.quantity >= 0 ? 'var(--success-color)' : 'var(--danger-color)'};">
+                                    ${formatNumber(entriesData.quantity - exitsData.quantity)}
+                                </strong>
+                                <small style="color: var(--text-secondary);">Saldo Unidades</small>
+                            </div>
+                            <div style="text-align: center;">
+                                <strong style="font-size: 1.3rem; display: block; color: ${entriesData.value - exitsData.value >= 0 ? 'var(--success-color)' : 'var(--danger-color)'};">
+                                    ${formatCurrency(entriesData.value - exitsData.value)}
+                                </strong>
+                                <small style="color: var(--text-secondary);">Saldo Valor</small>
+                            </div>
+                        </div>
+                    </div>
+                ` : ''}
+                
+                ${recentMovements.length > 0 ? `
+                    <div>
+                        <h4>Movimentações Recentes:</h4>
+                        <ul>
+                            ${recentMovements.slice(0, 10).map(m => {
+                                const product = this.products.find(p => p.id === m.productId);
+                                const movementValue = product ? (m.quantity * product.price) : 0;
+                                return `<li>
+                                    ${product ? product.name : 'N/A'} - 
+                                    <span style="color: ${m.type === 'entrada' ? 'var(--success-color)' : 'var(--warning-color)'};">
+                                        ${m.type === 'entrada' ? '+' : '-'}${formatNumber(m.quantity)} unidades 
+                                        (${formatCurrency(movementValue)})
+                                    </span> - 
+                                    ${formatDate(m.date)}
+                                </li>`;
+                            }).join('')}
+                            ${recentMovements.length > 10 ? `<li>... e mais ${recentMovements.length - 10} movimentações</li>` : ''}
+                        </ul>
+                    </div>
+                ` : ''}
+            </div>
         `;
     }
 
@@ -789,70 +903,205 @@ class StockMasterApp {
         const title = document.getElementById('modal-title');
         const submitText = document.getElementById('submit-text');
 
-        if (!modal || !form || !title || !submitText) return;
-
-        // Always populate categories when showing modal
-        await this.populateProductCategorySelect();
-
-        if (productId) {
-            const product = this.products.find(p => p.id === productId);
-            if (!product) return;
-
-            title.textContent = 'Editar Produto';
-            submitText.textContent = 'Atualizar Produto';
-            this.currentProduct = product;
-
-            // Fill form with product data
-            document.getElementById('product-code').value = product.code;
-            document.getElementById('product-name').value = product.name;
-            document.getElementById('product-category').value = product.category;
-            document.getElementById('product-quantity').value = product.quantity;
-            document.getElementById('product-price').value = product.price;
-            document.getElementById('product-description').value = product.description || '';
-            document.getElementById('product-supplier').value = product.supplier || '';
-            document.getElementById('product-min-stock').value = product.minStock || 10;
-        } else {
-            title.textContent = 'Adicionar Produto';
-            submitText.textContent = 'Adicionar Produto';
-            this.currentProduct = null;
-            form.reset();
-            document.getElementById('product-code').value = Utils.generateCode();
+        if (!modal) {
+            console.error('Product modal not found');
+            this.showError('Erro interno: modal do produto não encontrado');
+            return;
         }
 
-        modal.classList.add('active');
-        document.body.style.overflow = 'hidden';
+        if (!form) {
+            console.error('Product form not found');
+            this.showError('Erro interno: formulário do produto não encontrado');
+            return;
+        }
+
+        if (!title) {
+            console.error('Modal title not found');
+            this.showError('Erro interno: título do modal não encontrado');
+            return;
+        }
+
+        if (!submitText) {
+            console.error('Submit text not found');
+            this.showError('Erro interno: texto do botão não encontrado');
+            return;
+        }
+
+        try {
+            // Always populate categories when showing modal
+            await this.populateProductCategorySelect();
+            
+            // Wait a bit for categories to populate
+            await new Promise(resolve => setTimeout(resolve, 100));
+
+            // Verify category select was populated
+            const categorySelect = document.getElementById('product-category');
+            if (!categorySelect) {
+                console.error('Category select not found after population');
+                this.showError('Erro interno: seletor de categoria não encontrado');
+                return;
+            }
+
+            if (productId) {
+                const product = this.products.find(p => p.id === productId);
+                if (!product) {
+                    this.showError('Produto não encontrado');
+                    return;
+                }
+
+                title.textContent = 'Editar Produto';
+                submitText.textContent = 'Atualizar Produto';
+                this.currentProduct = product;
+
+                // Fill form with product data with null checks
+                const formElements = {
+                    code: document.getElementById('product-code'),
+                    name: document.getElementById('product-name'),
+                    category: document.getElementById('product-category'),
+                    quantity: document.getElementById('product-quantity'),
+                    price: document.getElementById('product-price'),
+                    description: document.getElementById('product-description'),
+                    supplier: document.getElementById('product-supplier'),
+                    minStock: document.getElementById('product-min-stock')
+                };
+
+                if (formElements.code) formElements.code.value = product.code;
+                if (formElements.name) formElements.name.value = product.name;
+                if (formElements.category) formElements.category.value = product.category;
+                if (formElements.quantity) formElements.quantity.value = product.quantity;
+                if (formElements.price) formElements.price.value = product.price;
+                if (formElements.description) formElements.description.value = product.description || '';
+                if (formElements.supplier) formElements.supplier.value = product.supplier || '';
+                if (formElements.minStock) formElements.minStock.value = product.minStock || 10;
+            } else {
+                title.textContent = 'Adicionar Produto';
+                submitText.textContent = 'Adicionar Produto';
+                this.currentProduct = null;
+                form.reset();
+                
+                const codeInput = document.getElementById('product-code');
+                if (codeInput) {
+                    codeInput.value = Utils.generateCode();
+                }
+            }
+
+            modal.classList.add('active');
+            document.body.style.overflow = 'hidden';
+            
+            // Focus on first input after modal opens
+            setTimeout(() => {
+                const firstInput = form.querySelector('input:not([readonly])');
+                if (firstInput) {
+                    firstInput.focus();
+                }
+            }, 100);
+        } catch (error) {
+            console.error('Error showing product modal:', error);
+            this.showError('Erro ao abrir formulário de produto: ' + (error.message || 'Erro desconhecido'));
+        }
     }
 
     async handleProductSubmit() {
         const form = document.getElementById('product-form');
-        const submitButton = form.querySelector('button[type="submit"]');
-        const submitText = document.getElementById('submit-text');
-        const originalText = submitText.textContent;
-        
-        const errors = Utils.validateForm(form);
-        
-        if (errors.length > 0) {
-            this.showError(errors.join('<br>'));
+        if (!form) {
+            console.error('Product form not found');
+            this.showError('Erro interno: formulário não encontrado');
             return;
         }
 
-        const productData = {
-            code: document.getElementById('product-code').value.trim(),
-            name: document.getElementById('product-name').value.trim(),
-            category: document.getElementById('product-category').value,
-            quantity: parseInt(document.getElementById('product-quantity').value) || 0,
-            price: parseFloat(document.getElementById('product-price').value) || 0,
-            description: document.getElementById('product-description').value.trim(),
-            supplier: document.getElementById('product-supplier').value.trim(),
-            minStock: parseInt(document.getElementById('product-min-stock').value) || 10
-        };
+        // Find submit button and text element more reliably
+        const submitButton = form.querySelector('button[type="submit"]') || document.querySelector('#product-modal button[type="submit"]');
+        const submitText = document.getElementById('submit-text');
+        
+        if (!submitButton) {
+            console.error('Submit button not found');
+            this.showError('Erro interno: botão de envio não encontrado');
+            return;
+        }
 
-        // Show loading state
+        if (!submitText) {
+            console.error('Submit text element not found');
+            this.showError('Erro interno: elemento de texto do botão não encontrado');
+            return;
+        }
+
+        const originalText = submitText.textContent;
+        
+        // Show loading state immediately
         submitButton.disabled = true;
         submitText.innerHTML = '<span class="loading-spinner"></span>Salvando...';
 
         try {
+            const errors = Utils.validateForm(form);
+            
+            if (errors.length > 0) {
+                this.showError(errors.join('<br>'));
+                return;
+            }
+
+            // Get form elements with comprehensive null checks
+            const formElements = {
+                code: document.getElementById('product-code'),
+                name: document.getElementById('product-name'),
+                category: document.getElementById('product-category'),
+                quantity: document.getElementById('product-quantity'),
+                price: document.getElementById('product-price'),
+                description: document.getElementById('product-description'),
+                supplier: document.getElementById('product-supplier'),
+                minStock: document.getElementById('product-min-stock')
+            };
+
+            // Check if all required elements exist
+            const requiredFields = ['code', 'name', 'category', 'quantity', 'price'];
+            const missingFields = requiredFields.filter(field => !formElements[field]);
+            
+            if (missingFields.length > 0) {
+                console.error('Missing form elements:', missingFields);
+                this.showError(`Erro interno: campos obrigatórios não encontrados: ${missingFields.join(', ')}`);
+                return;
+            }
+
+            // Validate category selection
+            if (!formElements.category.value) {
+                this.showError('Por favor, selecione uma categoria');
+                return;
+            }
+
+            const productData = {
+                code: formElements.code.value.trim(),
+                name: formElements.name.value.trim(),
+                category: formElements.category.value,
+                quantity: parseInt(formElements.quantity.value) || 0,
+                price: parseFloat(formElements.price.value) || 0,
+                description: formElements.description ? formElements.description.value.trim() : '',
+                supplier: formElements.supplier ? formElements.supplier.value.trim() : '',
+                minStock: formElements.minStock ? parseInt(formElements.minStock.value) || 10 : 10
+            };
+
+            // Additional validation
+            if (!productData.code || !productData.name) {
+                this.showError('Código e nome são obrigatórios');
+                return;
+            }
+
+            if (productData.quantity < 0) {
+                this.showError('Quantidade não pode ser negativa');
+                return;
+            }
+
+            if (productData.price < 0) {
+                this.showError('Preço não pode ser negativo');
+                return;
+            }
+
             if (this.currentProduct) {
+                // Check if another product with same code exists
+                const existingProduct = this.products.find(p => p.code === productData.code && p.id !== this.currentProduct.id);
+                if (existingProduct) {
+                    this.showError('Código do produto já existe. Por favor, use outro código.');
+                    return;
+                }
+                
                 await db.updateProduct(this.currentProduct.id, productData);
                 this.showSuccess('Produto atualizado com sucesso!');
             } else {
@@ -862,17 +1111,20 @@ class StockMasterApp {
                     this.showError('Código do produto já existe. Por favor, use outro código.');
                     return;
                 }
+                
                 await db.addProduct(productData);
                 this.showSuccess('Produto adicionado com sucesso!');
             }
 
+            // Reload data and update UI
             await this.loadData();
             this.renderCurrentPage();
             this.closeModal('product-modal');
         } catch (error) {
             console.error('Error saving product:', error);
-            this.showError('Erro ao salvar produto: ' + error.message);
+            this.showError('Erro ao salvar produto: ' + (error.message || 'Erro desconhecido'));
         } finally {
+            // Always restore button state
             submitButton.disabled = false;
             submitText.textContent = originalText;
         }
@@ -914,9 +1166,50 @@ class StockMasterApp {
 
     async handleMovementSubmit() {
         const form = document.getElementById('movement-form');
-        const submitButton = form.querySelector('button[type="submit"]');
+        if (!form) {
+            console.error('Movement form not found');
+            this.showError('Erro interno: formulário de movimentação não encontrado');
+            return;
+        }
+
+        // Find submit button more reliably - try multiple selectors
+        let submitButton = form.querySelector('button[type="submit"]');
+        if (!submitButton) {
+            submitButton = document.querySelector('#movement-modal button[type="submit"]');
+        }
+        if (!submitButton) {
+            submitButton = document.querySelector('#movement-modal .btn-primary');
+        }
+        if (!submitButton) {
+            submitButton = document.querySelector('#movement-modal .modal-actions .btn:last-child');
+        }
+        
+        if (!submitButton) {
+            console.error('Submit button not found in movement modal');
+            this.showError('Erro interno: botão de envio não encontrado no modal de movimentação');
+            return;
+        }
+
         const originalText = submitButton.textContent;
         
+        // Get form elements with null checks
+        const movementTypeEl = document.getElementById('movement-type');
+        const movementQuantityEl = document.getElementById('movement-quantity');
+        const movementReasonEl = document.getElementById('movement-reason');
+
+        // Check if all required elements exist
+        if (!movementTypeEl || !movementQuantityEl || !movementReasonEl) {
+            console.error('Movement form elements not found');
+            this.showError('Erro interno: elementos do formulário de movimentação não encontrados');
+            return;
+        }
+
+        if (!this.currentProduct) {
+            console.error('No current product selected');
+            this.showError('Erro interno: produto não selecionado');
+            return;
+        }
+
         const errors = Utils.validateForm(form);
         
         if (errors.length > 0) {
@@ -926,14 +1219,20 @@ class StockMasterApp {
 
         const movementData = {
             productId: this.currentProduct.id,
-            type: document.getElementById('movement-type').value,
-            quantity: parseInt(document.getElementById('movement-quantity').value) || 0,
-            reason: document.getElementById('movement-reason').value.trim()
+            type: movementTypeEl.value,
+            quantity: parseInt(movementQuantityEl.value) || 0,
+            reason: movementReasonEl.value.trim()
         };
 
         // Validate quantity
         if (movementData.quantity <= 0) {
             this.showError('Quantidade deve ser maior que zero');
+            return;
+        }
+
+        // Validate reason
+        if (!movementData.reason) {
+            this.showError('Motivo é obrigatório');
             return;
         }
 
