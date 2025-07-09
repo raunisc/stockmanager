@@ -5,10 +5,18 @@ class InsightEngine {
 
     async generateInsights() {
         try {
+            if (!this.db) {
+                throw new Error('Database not available');
+            }
+
             const products = await this.db.getProducts();
             const movements = await this.db.getMovements();
             
-            if (!products || products.length === 0) {
+            if (!Array.isArray(products) || !Array.isArray(movements)) {
+                throw new Error('Invalid data format');
+            }
+            
+            if (products.length === 0) {
                 return [{
                     type: 'primary',
                     icon: 'info-circle',
@@ -124,31 +132,48 @@ class InsightEngine {
 
     analyzeStockValue(products) {
         const insights = [];
-        const totalValue = products.reduce((sum, p) => sum + (p.quantity * p.price), 0);
-        const avgProductValue = totalValue / products.length;
+        
+        try {
+            const totalValue = products.reduce((sum, p) => sum + (p.quantity * p.price), 0);
+            const avgProductValue = totalValue / products.length;
 
-        if (totalValue > 100000) {
-            insights.push({
-                type: 'success',
-                icon: 'dollar-sign',
-                title: 'Alto Valor de Estoque',
-                content: `Seu estoque tem valor total de ${Utils.formatCurrency(totalValue)}. Considere estratégias de rotação para otimizar o capital investido.`,
-                priority: 'medium'
-            });
-        }
+            if (totalValue > 100000) {
+                insights.push({
+                    type: 'success',
+                    icon: 'dollar-sign',
+                    title: 'Alto Valor de Estoque',
+                    content: `Seu estoque tem valor total de ${this.formatCurrency(totalValue)}. Considere estratégias de rotação para otimizar o capital investido.`,
+                    priority: 'medium'
+                });
+            }
 
-        const highValueProducts = products.filter(p => (p.quantity * p.price) > avgProductValue * 2);
-        if (highValueProducts.length > 0) {
-            insights.push({
-                type: 'primary',
-                icon: 'gem',
-                title: 'Produtos de Alto Valor',
-                content: `${highValueProducts.length} produto(s) representam alto valor no estoque. Monitore-os de perto para evitar perdas.`,
-                priority: 'medium'
-            });
+            const highValueProducts = products.filter(p => (p.quantity * p.price) > avgProductValue * 2);
+            if (highValueProducts.length > 0) {
+                insights.push({
+                    type: 'primary',
+                    icon: 'gem',
+                    title: 'Produtos de Alto Valor',
+                    content: `${highValueProducts.length} produto(s) representam alto valor no estoque. Monitore-os de perto para evitar perdas.`,
+                    priority: 'medium'
+                });
+            }
+        } catch (error) {
+            console.error('Error analyzing stock value:', error);
         }
 
         return insights;
+    }
+
+    formatCurrency(amount) {
+        try {
+            return new Intl.NumberFormat('pt-BR', {
+                style: 'currency',
+                currency: 'BRL',
+                minimumFractionDigits: 2
+            }).format(amount);
+        } catch (error) {
+            return `R$ ${amount.toFixed(2)}`;
+        }
     }
 
     analyzeCategoryDistribution(products) {
@@ -300,5 +325,21 @@ class InsightEngine {
     }
 }
 
-// Create global instance
-const insightEngine = new InsightEngine(db);
+// Create global instance safely
+let insightEngine;
+try {
+    if (typeof db !== 'undefined') {
+        insightEngine = new InsightEngine(db);
+    } else {
+        // Wait for database to be ready
+        document.addEventListener('DOMContentLoaded', () => {
+            setTimeout(() => {
+                if (typeof db !== 'undefined') {
+                    insightEngine = new InsightEngine(db);
+                }
+            }, 1000);
+        });
+    }
+} catch (error) {
+    console.error('Failed to create insight engine:', error);
+}

@@ -9,19 +9,156 @@ class StockMasterApp {
         this.isMobile = window.innerWidth <= 768;
         this.chartInstance = null;
         this.isLoading = false;
+        this.dataWatcher = null;
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 5;
         
         this.init();
     }
 
     async init() {
-        // Wait for Chart.js to load
-        await this.waitForChart();
-        await this.loadData();
-        this.setupEventListeners();
-        this.setupMobileMenu();
-        this.renderCurrentPage();
-        this.updateDashboard();
-        this.handleResize();
+        try {
+            // Wait for database to be ready
+            await this.waitForDatabase();
+            
+            // Wait for Chart.js to load
+            await this.waitForChart();
+            
+            // Setup data monitoring
+            this.setupDataMonitoring();
+            
+            await this.loadData();
+            this.setupEventListeners();
+            this.setupMobileMenu();
+            this.renderCurrentPage();
+            this.updateDashboard();
+            this.handleResize();
+            
+            // Setup periodic data validation
+            this.setupDataValidation();
+            
+            console.log('App initialized successfully');
+        } catch (error) {
+            console.error('App initialization failed:', error);
+            this.showError('Erro ao inicializar aplicação');
+        }
+    }
+
+    async waitForDatabase() {
+        return new Promise((resolve) => {
+            const checkDatabase = () => {
+                if (typeof db !== 'undefined') {
+                    resolve();
+                } else {
+                    setTimeout(checkDatabase, 100);
+                }
+            };
+            checkDatabase();
+        });
+    }
+
+    setupDataMonitoring() {
+        // Monitor storage events for data changes
+        window.addEventListener('storage', (e) => {
+            if (e.key && e.key.startsWith('products') || e.key.startsWith('movements') || e.key.startsWith('categories')) {
+                console.log('Data changed, refreshing...');
+                this.loadData();
+            }
+        });
+
+        // Periodic data refresh to catch any missed changes
+        setInterval(() => {
+            this.validateDataIntegrity();
+        }, 30000); // Every 30 seconds
+    }
+
+    setupDataValidation() {
+        // Validate data integrity every 5 minutes
+        setInterval(() => {
+            this.performDataValidation();
+        }, 5 * 60 * 1000);
+    }
+
+    async performDataValidation() {
+        try {
+            const products = await db.getProducts();
+            const movements = await db.getMovements();
+            const categories = await db.getCategories();
+
+            // Check for data corruption
+            if (!Array.isArray(products) || !Array.isArray(movements) || !Array.isArray(categories)) {
+                console.error('Data corruption detected, attempting recovery...');
+                await this.recoverData();
+                return;
+            }
+
+            // Validate product data
+            const invalidProducts = products.filter(p => !p.id || !p.name || !p.code || typeof p.quantity !== 'number');
+            if (invalidProducts.length > 0) {
+                console.warn('Invalid products detected:', invalidProducts);
+                await this.cleanupInvalidData();
+            }
+
+            // Validate movement data
+            const invalidMovements = movements.filter(m => !m.id || !m.productId || !m.type || !m.quantity);
+            if (invalidMovements.length > 0) {
+                console.warn('Invalid movements detected:', invalidMovements);
+                await this.cleanupInvalidData();
+            }
+
+            console.log('Data validation completed successfully');
+        } catch (error) {
+            console.error('Data validation failed:', error);
+            await this.recoverData();
+        }
+    }
+
+    async recoverData() {
+        try {
+            console.log('Attempting data recovery...');
+            const recovered = await db.recoverFromBackup();
+            if (recovered) {
+                await this.loadData();
+                this.renderCurrentPage();
+                this.showInfo('Dados recuperados com sucesso de backup!');
+            } else {
+                this.showError('Não foi possível recuperar os dados. Iniciando com dados limpos.');
+            }
+        } catch (error) {
+            console.error('Data recovery failed:', error);
+            this.showError('Falha na recuperação de dados');
+        }
+    }
+
+    async cleanupInvalidData() {
+        try {
+            // This would implement cleanup logic for invalid data
+            console.log('Cleaning up invalid data...');
+            await this.loadData();
+            this.renderCurrentPage();
+        } catch (error) {
+            console.error('Cleanup failed:', error);
+        }
+    }
+
+    async validateDataIntegrity() {
+        try {
+            const currentProducts = await db.getProducts();
+            const currentMovements = await db.getMovements();
+            const currentCategories = await db.getCategories();
+
+            // Check if data has changed unexpectedly
+            if (JSON.stringify(this.products) !== JSON.stringify(currentProducts) ||
+                JSON.stringify(this.movements) !== JSON.stringify(currentMovements) ||
+                JSON.stringify(this.categories) !== JSON.stringify(currentCategories)) {
+                
+                console.log('Data integrity check: changes detected, updating...');
+                await this.loadData();
+                this.renderCurrentPage();
+            }
+        } catch (error) {
+            console.error('Data integrity check failed:', error);
+        }
     }
 
     waitForChart() {
@@ -46,9 +183,24 @@ class StockMasterApp {
             this.categories = await db.getCategories();
             this.movements = await db.getMovements();
             this.settings = await db.getSetting('general') || {};
+            
+            // Validate loaded data
+            if (!Array.isArray(this.products)) this.products = [];
+            if (!Array.isArray(this.categories)) this.categories = [];
+            if (!Array.isArray(this.movements)) this.movements = [];
+            
+            console.log('Data loaded successfully:', {
+                products: this.products.length,
+                categories: this.categories.length,
+                movements: this.movements.length
+            });
         } catch (error) {
             console.error('Error loading data:', error);
             this.showError('Erro ao carregar dados');
+            // Initialize with empty arrays
+            this.products = [];
+            this.categories = [];
+            this.movements = [];
         } finally {
             this.setLoading(false);
         }
@@ -518,25 +670,27 @@ class StockMasterApp {
     }
 
     async populateProductCategorySelect() {
-        const select = document.getElementById('product-category');
-        if (!select) {
-            console.error('Product category select not found');
-            return;
-        }
-
         try {
-            const categories = await db.getCategories();
+            const select = document.getElementById('product-category');
+            if (!select) {
+                console.error('Product category select not found');
+                return;
+            }
+
+            // Ensure categories are loaded
+            await this.ensureCategoriesLoaded();
+            
             select.innerHTML = '<option value="">Selecionar categoria</option>';
             
-            if (categories && categories.length > 0) {
-                categories.forEach(category => {
+            if (this.categories && this.categories.length > 0) {
+                this.categories.forEach(category => {
                     const option = document.createElement('option');
                     option.value = category.name;
                     option.textContent = category.name;
                     select.appendChild(option);
                 });
             } else {
-                // If no categories exist, create default ones
+                // Create default categories if none exist
                 const defaultCategories = [
                     { name: 'Burger e Otakus', description: 'Produtos relacionados a hambúrgueres e cultura otaku' },
                     { name: 'Dogão do Canela Fina', description: 'Hot dogs e produtos especiais do Canela Fina' }
@@ -546,21 +700,23 @@ class StockMasterApp {
                     await db.addCategory(category);
                 }
 
-                // Reload categories after adding defaults
-                const newCategories = await db.getCategories();
-                if (newCategories && newCategories.length > 0) {
-                    newCategories.forEach(category => {
-                        const option = document.createElement('option');
-                        option.value = category.name;
-                        option.textContent = category.name;
-                        select.appendChild(option);
-                    });
-                }
+                // Reload categories
+                await this.loadData();
+                
+                // Populate select with new categories
+                this.categories.forEach(category => {
+                    const option = document.createElement('option');
+                    option.value = category.name;
+                    option.textContent = category.name;
+                    select.appendChild(option);
+                });
             }
         } catch (error) {
             console.error('Error populating product category select:', error);
-            // Add a fallback option
-            select.innerHTML = '<option value="">Erro ao carregar categorias</option>';
+            const select = document.getElementById('product-category');
+            if (select) {
+                select.innerHTML = '<option value="">Erro ao carregar categorias</option>';
+            }
         }
     }
 
@@ -898,49 +1054,24 @@ class StockMasterApp {
 
     // Product Management
     async showProductModal(productId = null) {
-        const modal = document.getElementById('product-modal');
-        const form = document.getElementById('product-form');
-        const title = document.getElementById('modal-title');
-        const submitText = document.getElementById('submit-text');
-
-        if (!modal) {
-            console.error('Product modal not found');
-            this.showError('Erro interno: modal do produto não encontrado');
-            return;
-        }
-
-        if (!form) {
-            console.error('Product form not found');
-            this.showError('Erro interno: formulário do produto não encontrado');
-            return;
-        }
-
-        if (!title) {
-            console.error('Modal title not found');
-            this.showError('Erro interno: título do modal não encontrado');
-            return;
-        }
-
-        if (!submitText) {
-            console.error('Submit text not found');
-            this.showError('Erro interno: texto do botão não encontrado');
-            return;
-        }
-
         try {
-            // Always populate categories when showing modal
-            await this.populateProductCategorySelect();
-            
-            // Wait a bit for categories to populate
-            await new Promise(resolve => setTimeout(resolve, 100));
+            const modal = document.getElementById('product-modal');
+            const form = document.getElementById('product-form');
+            const title = document.getElementById('modal-title');
+            const submitText = document.getElementById('submit-text');
 
-            // Verify category select was populated
-            const categorySelect = document.getElementById('product-category');
-            if (!categorySelect) {
-                console.error('Category select not found after population');
-                this.showError('Erro interno: seletor de categoria não encontrado');
+            if (!modal || !form || !title || !submitText) {
+                console.error('Modal elements not found');
+                this.showError('Erro interno: elementos do modal não encontrados');
                 return;
             }
+
+            // Always ensure categories are loaded and populated
+            await this.ensureCategoriesLoaded();
+            await this.populateProductCategorySelect();
+            
+            // Wait for DOM to update
+            await new Promise(resolve => setTimeout(resolve, 100));
 
             if (productId) {
                 const product = this.products.find(p => p.id === productId);
@@ -953,32 +1084,15 @@ class StockMasterApp {
                 submitText.textContent = 'Atualizar Produto';
                 this.currentProduct = product;
 
-                // Fill form with product data with null checks
-                const formElements = {
-                    code: document.getElementById('product-code'),
-                    name: document.getElementById('product-name'),
-                    category: document.getElementById('product-category'),
-                    quantity: document.getElementById('product-quantity'),
-                    price: document.getElementById('product-price'),
-                    description: document.getElementById('product-description'),
-                    supplier: document.getElementById('product-supplier'),
-                    minStock: document.getElementById('product-min-stock')
-                };
-
-                if (formElements.code) formElements.code.value = product.code;
-                if (formElements.name) formElements.name.value = product.name;
-                if (formElements.category) formElements.category.value = product.category;
-                if (formElements.quantity) formElements.quantity.value = product.quantity;
-                if (formElements.price) formElements.price.value = product.price;
-                if (formElements.description) formElements.description.value = product.description || '';
-                if (formElements.supplier) formElements.supplier.value = product.supplier || '';
-                if (formElements.minStock) formElements.minStock.value = product.minStock || 10;
+                // Fill form with product data
+                this.fillProductForm(product);
             } else {
                 title.textContent = 'Adicionar Produto';
                 submitText.textContent = 'Adicionar Produto';
                 this.currentProduct = null;
                 form.reset();
                 
+                // Generate new code
                 const codeInput = document.getElementById('product-code');
                 if (codeInput) {
                     codeInput.value = Utils.generateCode();
@@ -988,7 +1102,7 @@ class StockMasterApp {
             modal.classList.add('active');
             document.body.style.overflow = 'hidden';
             
-            // Focus on first input after modal opens
+            // Focus on first input
             setTimeout(() => {
                 const firstInput = form.querySelector('input:not([readonly])');
                 if (firstInput) {
@@ -997,121 +1111,85 @@ class StockMasterApp {
             }, 100);
         } catch (error) {
             console.error('Error showing product modal:', error);
-            this.showError('Erro ao abrir formulário de produto: ' + (error.message || 'Erro desconhecido'));
+            this.showError('Erro ao abrir formulário de produto');
         }
     }
 
+    async ensureCategoriesLoaded() {
+        if (this.categories.length === 0) {
+            await this.loadData();
+        }
+    }
+
+    fillProductForm(product) {
+        const fields = [
+            { id: 'product-code', value: product.code },
+            { id: 'product-name', value: product.name },
+            { id: 'product-category', value: product.category },
+            { id: 'product-quantity', value: product.quantity },
+            { id: 'product-price', value: product.price },
+            { id: 'product-description', value: product.description || '' },
+            { id: 'product-supplier', value: product.supplier || '' },
+            { id: 'product-min-stock', value: product.minStock || 10 }
+        ];
+
+        fields.forEach(field => {
+            const element = document.getElementById(field.id);
+            if (element) {
+                element.value = field.value;
+            }
+        });
+    }
+
     async handleProductSubmit() {
-        const form = document.getElementById('product-form');
-        if (!form) {
-            console.error('Product form not found');
-            this.showError('Erro interno: formulário não encontrado');
-            return;
-        }
-
-        // Find submit button and text element more reliably
-        const submitButton = form.querySelector('button[type="submit"]') || document.querySelector('#product-modal button[type="submit"]');
-        const submitText = document.getElementById('submit-text');
-        
-        if (!submitButton) {
-            console.error('Submit button not found');
-            this.showError('Erro interno: botão de envio não encontrado');
-            return;
-        }
-
-        if (!submitText) {
-            console.error('Submit text element not found');
-            this.showError('Erro interno: elemento de texto do botão não encontrado');
-            return;
-        }
-
-        const originalText = submitText.textContent;
-        
-        // Show loading state immediately
-        submitButton.disabled = true;
-        submitText.innerHTML = '<span class="loading-spinner"></span>Salvando...';
-
         try {
+            const form = document.getElementById('product-form');
+            if (!form) {
+                throw new Error('Formulário não encontrado');
+            }
+
+            const submitButton = this.findSubmitButton(form);
+            if (!submitButton) {
+                throw new Error('Botão de envio não encontrado');
+            }
+
+            const submitText = submitButton.querySelector('span') || submitButton;
+            const originalText = submitText.textContent;
+            
+            // Show loading state
+            submitButton.disabled = true;
+            submitText.innerHTML = '<span class="loading-spinner"></span>Salvando...';
+
+            // Validate form
             const errors = Utils.validateForm(form);
-            
             if (errors.length > 0) {
-                this.showError(errors.join('<br>'));
-                return;
+                throw new Error(errors.join('<br>'));
             }
 
-            // Get form elements with comprehensive null checks
-            const formElements = {
-                code: document.getElementById('product-code'),
-                name: document.getElementById('product-name'),
-                category: document.getElementById('product-category'),
-                quantity: document.getElementById('product-quantity'),
-                price: document.getElementById('product-price'),
-                description: document.getElementById('product-description'),
-                supplier: document.getElementById('product-supplier'),
-                minStock: document.getElementById('product-min-stock')
-            };
-
-            // Check if all required elements exist
-            const requiredFields = ['code', 'name', 'category', 'quantity', 'price'];
-            const missingFields = requiredFields.filter(field => !formElements[field]);
+            // Get form data
+            const productData = this.getProductFormData();
             
-            if (missingFields.length > 0) {
-                console.error('Missing form elements:', missingFields);
-                this.showError(`Erro interno: campos obrigatórios não encontrados: ${missingFields.join(', ')}`);
-                return;
-            }
+            // Validate product data
+            this.validateProductData(productData);
 
-            // Validate category selection
-            if (!formElements.category.value) {
-                this.showError('Por favor, selecione uma categoria');
-                return;
-            }
-
-            const productData = {
-                code: formElements.code.value.trim(),
-                name: formElements.name.value.trim(),
-                category: formElements.category.value,
-                quantity: parseInt(formElements.quantity.value) || 0,
-                price: parseFloat(formElements.price.value) || 0,
-                description: formElements.description ? formElements.description.value.trim() : '',
-                supplier: formElements.supplier ? formElements.supplier.value.trim() : '',
-                minStock: formElements.minStock ? parseInt(formElements.minStock.value) || 10 : 10
-            };
-
-            // Additional validation
-            if (!productData.code || !productData.name) {
-                this.showError('Código e nome são obrigatórios');
-                return;
-            }
-
-            if (productData.quantity < 0) {
-                this.showError('Quantidade não pode ser negativa');
-                return;
-            }
-
-            if (productData.price < 0) {
-                this.showError('Preço não pode ser negativo');
-                return;
-            }
-
-            if (this.currentProduct) {
-                // Check if another product with same code exists
+            // Check for duplicate code
+            if (!this.currentProduct) {
+                const existingProduct = this.products.find(p => p.code === productData.code);
+                if (existingProduct) {
+                    throw new Error('Código do produto já existe');
+                }
+            } else {
                 const existingProduct = this.products.find(p => p.code === productData.code && p.id !== this.currentProduct.id);
                 if (existingProduct) {
-                    this.showError('Código do produto já existe. Por favor, use outro código.');
-                    return;
+                    throw new Error('Código do produto já existe');
                 }
-                
+            }
+
+            // Save product
+            if (this.currentProduct) {
                 await db.updateProduct(this.currentProduct.id, productData);
                 this.showSuccess('Produto atualizado com sucesso!');
             } else {
-                // Check if product code already exists
-                const existingProduct = this.products.find(p => p.code === productData.code);
-                if (existingProduct) {
-                    this.showError('Código do produto já existe. Por favor, use outro código.');
-                    return;
-                }
-                
                 await db.addProduct(productData);
                 this.showSuccess('Produto adicionado com sucesso!');
             }
@@ -1120,13 +1198,68 @@ class StockMasterApp {
             await this.loadData();
             this.renderCurrentPage();
             this.closeModal('product-modal');
+            
         } catch (error) {
             console.error('Error saving product:', error);
-            this.showError('Erro ao salvar produto: ' + (error.message || 'Erro desconhecido'));
+            this.showError(error.message || 'Erro ao salvar produto');
         } finally {
             // Always restore button state
-            submitButton.disabled = false;
-            submitText.textContent = originalText;
+            const form = document.getElementById('product-form');
+            if (form) {
+                const submitButton = this.findSubmitButton(form);
+                if (submitButton) {
+                    submitButton.disabled = false;
+                    const submitText = submitButton.querySelector('span') || submitButton;
+                    submitText.textContent = this.currentProduct ? 'Atualizar Produto' : 'Adicionar Produto';
+                }
+            }
+        }
+    }
+
+    findSubmitButton(form) {
+        // Try multiple ways to find the submit button
+        let submitButton = form.querySelector('button[type="submit"]');
+        if (!submitButton) {
+            submitButton = document.querySelector('#product-modal button[type="submit"]');
+        }
+        if (!submitButton) {
+            submitButton = document.querySelector('#product-modal .btn-primary');
+        }
+        if (!submitButton) {
+            submitButton = document.querySelector('#product-modal .modal-actions .btn:last-child');
+        }
+        return submitButton;
+    }
+
+    getProductFormData() {
+        const getElementValue = (id, defaultValue = '') => {
+            const element = document.getElementById(id);
+            return element ? element.value.trim() : defaultValue;
+        };
+
+        return {
+            code: getElementValue('product-code'),
+            name: getElementValue('product-name'),
+            category: getElementValue('product-category'),
+            quantity: parseInt(getElementValue('product-quantity', '0')) || 0,
+            price: parseFloat(getElementValue('product-price', '0')) || 0,
+            description: getElementValue('product-description'),
+            supplier: getElementValue('product-supplier'),
+            minStock: parseInt(getElementValue('product-min-stock', '10')) || 10
+        };
+    }
+
+    validateProductData(productData) {
+        if (!productData.code || !productData.name || !productData.category) {
+            throw new Error('Código, nome e categoria são obrigatórios');
+        }
+
+        if (productData.quantity < 0) {
+            throw new Error('Quantidade não pode ser negativa');
+        }
+
+        if (productData.price < 0) {
+            throw new Error('Preço não pode ser negativo');
         }
     }
 
@@ -1134,10 +1267,34 @@ class StockMasterApp {
         if (!confirm('Tem certeza que deseja excluir este produto?')) return;
 
         try {
-            await db.deleteProduct(productId);
+            // Add retry logic for delete operations
+            let success = false;
+            let attempts = 0;
+            
+            while (!success && attempts < 3) {
+                try {
+                    await db.deleteProduct(productId);
+                    success = true;
+                } catch (error) {
+                    attempts++;
+                    console.error(`Delete operation attempt ${attempts} failed:`, error);
+                    
+                    if (attempts < 3) {
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    } else {
+                        throw error;
+                    }
+                }
+            }
+            
             showNotification('Produto excluído com sucesso!');
             await this.loadData();
             this.renderCurrentPage();
+            
+            // Force backup creation after successful delete
+            if (db.createBackup) {
+                await db.createBackup();
+            }
         } catch (error) {
             console.error('Error deleting product:', error);
             showNotification('Erro ao excluir produto: ' + error.message, 'error');
@@ -1150,120 +1307,137 @@ class StockMasterApp {
 
     // Movement Management
     showMovementModal(productId) {
-        const product = this.products.find(p => p.id === productId);
-        if (!product) return;
+        try {
+            const product = this.products.find(p => p.id === productId);
+            if (!product) {
+                this.showError('Produto não encontrado');
+                return;
+            }
 
-        this.currentProduct = product;
-        const modal = document.getElementById('movement-modal');
-        const form = document.getElementById('movement-form');
-        
-        if (modal && form) {
+            this.currentProduct = product;
+            const modal = document.getElementById('movement-modal');
+            const form = document.getElementById('movement-form');
+            
+            if (!modal || !form) {
+                this.showError('Erro interno: modal de movimentação não encontrado');
+                return;
+            }
+
             modal.classList.add('active');
             form.reset();
             document.body.style.overflow = 'hidden';
+            
+            // Focus on first input
+            setTimeout(() => {
+                const firstInput = form.querySelector('select, input');
+                if (firstInput) {
+                    firstInput.focus();
+                }
+            }, 100);
+        } catch (error) {
+            console.error('Error showing movement modal:', error);
+            this.showError('Erro ao abrir modal de movimentação');
         }
     }
 
     async handleMovementSubmit() {
-        const form = document.getElementById('movement-form');
-        if (!form) {
-            console.error('Movement form not found');
-            this.showError('Erro interno: formulário de movimentação não encontrado');
-            return;
-        }
-
-        // Find submit button more reliably - try multiple selectors
-        let submitButton = form.querySelector('button[type="submit"]');
-        if (!submitButton) {
-            submitButton = document.querySelector('#movement-modal button[type="submit"]');
-        }
-        if (!submitButton) {
-            submitButton = document.querySelector('#movement-modal .btn-primary');
-        }
-        if (!submitButton) {
-            submitButton = document.querySelector('#movement-modal .modal-actions .btn:last-child');
-        }
-        
-        if (!submitButton) {
-            console.error('Submit button not found in movement modal');
-            this.showError('Erro interno: botão de envio não encontrado no modal de movimentação');
-            return;
-        }
-
-        const originalText = submitButton.textContent;
-        
-        // Get form elements with null checks
-        const movementTypeEl = document.getElementById('movement-type');
-        const movementQuantityEl = document.getElementById('movement-quantity');
-        const movementReasonEl = document.getElementById('movement-reason');
-
-        // Check if all required elements exist
-        if (!movementTypeEl || !movementQuantityEl || !movementReasonEl) {
-            console.error('Movement form elements not found');
-            this.showError('Erro interno: elementos do formulário de movimentação não encontrados');
-            return;
-        }
-
-        if (!this.currentProduct) {
-            console.error('No current product selected');
-            this.showError('Erro interno: produto não selecionado');
-            return;
-        }
-
-        const errors = Utils.validateForm(form);
-        
-        if (errors.length > 0) {
-            this.showError(errors.join('<br>'));
-            return;
-        }
-
-        const movementData = {
-            productId: this.currentProduct.id,
-            type: movementTypeEl.value,
-            quantity: parseInt(movementQuantityEl.value) || 0,
-            reason: movementReasonEl.value.trim()
-        };
-
-        // Validate quantity
-        if (movementData.quantity <= 0) {
-            this.showError('Quantidade deve ser maior que zero');
-            return;
-        }
-
-        // Validate reason
-        if (!movementData.reason) {
-            this.showError('Motivo é obrigatório');
-            return;
-        }
-
-        // Update product quantity
-        const newQuantity = movementData.type === 'entrada' 
-            ? this.currentProduct.quantity + movementData.quantity
-            : this.currentProduct.quantity - movementData.quantity;
-
-        if (newQuantity < 0) {
-            this.showError('Quantidade insuficiente em estoque');
-            return;
-        }
-
-        // Show loading state
-        submitButton.disabled = true;
-        submitButton.innerHTML = '<span class="loading-spinner"></span>Salvando...';
-
         try {
-            await db.addMovement(movementData);
+            const form = document.getElementById('movement-form');
+            if (!form) {
+                throw new Error('Formulário de movimentação não encontrado');
+            }
+
+            const submitButton = this.findMovementSubmitButton();
+            if (!submitButton) {
+                throw new Error('Botão de envio não encontrado');
+            }
+
+            const originalText = submitButton.textContent;
+            
+            if (!this.currentProduct) {
+                throw new Error('Produto não selecionado');
+            }
+
+            // Get form data
+            const movementData = this.getMovementFormData();
+            
+            // Validate movement data
+            this.validateMovementData(movementData);
+
+            // Show loading state
+            submitButton.disabled = true;
+            submitButton.innerHTML = '<span class="loading-spinner"></span>Salvando...';
+
+            // Calculate new quantity
+            const newQuantity = movementData.type === 'entrada' 
+                ? this.currentProduct.quantity + movementData.quantity
+                : this.currentProduct.quantity - movementData.quantity;
+
+            if (newQuantity < 0) {
+                throw new Error('Quantidade insuficiente em estoque');
+            }
+
+            // Save movement and update product
+            await db.addMovement({
+                ...movementData,
+                productId: this.currentProduct.id
+            });
+            
             await db.updateProduct(this.currentProduct.id, { quantity: newQuantity });
             
             this.showSuccess('Movimentação registrada com sucesso!');
             await this.loadData();
             this.renderCurrentPage();
             this.closeModal('movement-modal');
+            
         } catch (error) {
             console.error('Error saving movement:', error);
-            this.showError('Erro ao registrar movimentação: ' + error.message);
+            this.showError(error.message || 'Erro ao registrar movimentação');
         } finally {
-            submitButton.disabled = false;
-            submitButton.textContent = originalText;
+            // Always restore button state
+            const submitButton = this.findMovementSubmitButton();
+            if (submitButton) {
+                submitButton.disabled = false;
+                submitButton.textContent = 'Registrar Movimento';
+            }
+        }
+    }
+
+    findMovementSubmitButton() {
+        // Try multiple ways to find the submit button
+        let submitButton = document.querySelector('#movement-modal button[type="submit"]');
+        if (!submitButton) {
+            submitButton = document.querySelector('#movement-modal .btn-primary');
+        }
+        if (!submitButton) {
+            submitButton = document.querySelector('#movement-modal .modal-actions .btn:last-child');
+        }
+        if (!submitButton) {
+            submitButton = document.getElementById('movement-submit-btn');
+        }
+        return submitButton;
+    }
+
+    getMovementFormData() {
+        const getElementValue = (id, defaultValue = '') => {
+            const element = document.getElementById(id);
+            return element ? element.value.trim() : defaultValue;
+        };
+
+        return {
+            type: getElementValue('movement-type'),
+            quantity: parseInt(getElementValue('movement-quantity', '0')) || 0,
+            reason: getElementValue('movement-reason')
+        };
+    }
+
+    validateMovementData(movementData) {
+        if (!movementData.type || !movementData.reason) {
+            throw new Error('Tipo e motivo são obrigatórios');
+        }
+
+        if (movementData.quantity <= 0) {
+            throw new Error('Quantidade deve ser maior que zero');
         }
     }
 
@@ -1276,9 +1450,33 @@ class StockMasterApp {
         };
 
         try {
-            await db.saveSetting('general', settingsData);
+            // Add retry logic for settings save
+            let success = false;
+            let attempts = 0;
+            
+            while (!success && attempts < 3) {
+                try {
+                    await db.saveSetting('general', settingsData);
+                    success = true;
+                } catch (error) {
+                    attempts++;
+                    console.error(`Settings save attempt ${attempts} failed:`, error);
+                    
+                    if (attempts < 3) {
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    } else {
+                        throw error;
+                    }
+                }
+            }
+            
             showNotification('Configurações salvas com sucesso!');
             this.settings = settingsData;
+            
+            // Force backup creation after successful save
+            if (db.createBackup) {
+                await db.createBackup();
+            }
         } catch (error) {
             console.error('Error saving settings:', error);
             showNotification('Erro ao salvar configurações: ' + error.message, 'error');
@@ -1453,15 +1651,25 @@ class StockMasterApp {
     }
 
     showSuccess(message) {
-        showNotification(message, 'success');
+        Utils.showNotification(message, 'success');
     }
 
     showError(message) {
-        showNotification(message, 'error');
+        Utils.showNotification(message, 'error');
     }
 
     showInfo(message) {
-        showNotification(message, 'info');
+        Utils.showNotification(message, 'info');
+    }
+
+    // Cleanup method
+    destroy() {
+        if (this.dataWatcher) {
+            clearInterval(this.dataWatcher);
+        }
+        if (db && db.destroy) {
+            db.destroy();
+        }
     }
 }
 
@@ -1476,7 +1684,19 @@ window.importData = () => app.importData();
 window.clearAllData = () => app.clearAllData();
 window.generateReport = () => app.generateReport();
 
+// Ensure cleanup on page unload
+window.addEventListener('beforeunload', () => {
+    if (window.app && window.app.destroy) {
+        window.app.destroy();
+    }
+});
+
 // Initialize app when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    window.app = new StockMasterApp();
+    try {
+        window.app = new StockMasterApp();
+    } catch (error) {
+        console.error('Failed to initialize app:', error);
+        Utils.showNotification('Erro ao inicializar aplicação', 'error');
+    }
 });
